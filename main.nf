@@ -641,8 +641,9 @@ workflow sample_pipeline {
         )
     }
     qc_report.out.report_files
-        .map { report: Path, snapshot: Path, state: Path ->
-            publish_qc_report_snapshot([report, snapshot, state], ica_output_root)
+        .map { report_files: Collection<Path> ->
+            def ordered_files: List<Path> = report_files.toList()
+            publish_qc_report_snapshot(ordered_files, ica_output_root)
         }
         .collect()
 }

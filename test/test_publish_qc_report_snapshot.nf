@@ -35,6 +35,28 @@ workflow {
     assert java.nio.file.Files.list(output).withCloseable { paths ->
         paths.noneMatch { path: Path -> path.fileName.toString().endsWith('.pending') }
     }
+
+    // A process `files(..., arity: '3')` output reaches channel operators as a
+    // LinkedHashSet. Exercise that exact boundary so a List-only or multi-arg
+    // map closure cannot regress report publication again.
+    def channel_source: Path = root.resolve('source_0')
+    def report_files: Set<Path> = [
+        channel_source.resolve('qc_report.html'),
+        channel_source.resolve('qc_report_snapshot_revision_0.html'),
+        channel_source.resolve('qc_report_state.json'),
+    ] as Set<Path>
+    def channel_output: Path = root.resolve('channel_output')
+    channel.of(report_files)
+        .map { files: Collection<Path> ->
+            def ordered_files: List<Path> = files.toList()
+            publish_qc_report_snapshot(ordered_files, channel_output)
+        }
+        .view { snapshot: Path ->
+            assert snapshot == channel_output.resolve('qc_report_snapshot_revision_0.html')
+            assert java.nio.file.Files.readString(snapshot) == 'snapshot 0'
+            'QC report channel publication passed'
+        }
+
     if (params.stale) {
         def stale_source: Path = root.resolve('source_0')
         publish_qc_report_snapshot(
