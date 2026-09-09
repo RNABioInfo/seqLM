@@ -118,14 +118,10 @@ for the matching complete cumulative quantification/biotype batch; if
 differential expression is enabled it also waits for the matching readiness or
 result record. This prevents report figures from mixing live batches.
 
-Required local Docker images:
-
-* `seq_lm/quality_control`: provides NanoGet for the per-read QC table.
-* `seq_lm/samtools`: provides samtools for sorting, merging, indexing, and
-  flagstat.
-* `seq_lm/dea_r`: provides edgeR and writes the differential report inputs.
-* `seq_lm/report`: provides ezCharts, Bokeh, pandas, and scikit-learn for the
-  combined HTML report.
+Nextflow automatically fetches the configured, versioned images from Docker Hub
+through the selected container runtime. These images provide NanoGet for per-read
+QC, samtools for alignment processing, edgeR for differential expression, and
+ezCharts/Bokeh for the combined HTML report.
 
 The chunk-level QC workflow intentionally does not consume the reference
 annotation. Transcript-biotype composition is produced by the standalone

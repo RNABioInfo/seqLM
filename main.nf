@@ -284,6 +284,7 @@ workflow sample_pipeline {
     minknow_connection: Map
     ica_matrix: Path
     ica_gene_map: Path
+    ica_imodulon_table: Path
     ica_settings: Map
     first_ica_index: Integer
     ica_output_root: Path
@@ -346,6 +347,7 @@ workflow sample_pipeline {
                 ica_matrix,
                 reference_annotation,
                 ica_gene_map,
+                ica_imodulon_table,
                 ica_settings,
                 first_ica_index,
                 ica_output_root,
@@ -768,7 +770,9 @@ workflow {
         minknow_connection,
         ica_enabled ? file(params.ica_matrix, checkIfExists: true) : optional_file(),
         ica_enabled && params.ica_gene_map ? file(params.ica_gene_map, checkIfExists: true) : optional_file(),
+        ica_enabled && params.ica_imodulon_table ? file(params.ica_imodulon_table, checkIfExists: true) : optional_file(),
         [enabled: ica_enabled,
+         has_imodulon_table: params.ica_imodulon_table != null && "${params.ica_imodulon_table}".trim() != '',
          has_gene_map: params.ica_gene_map != null && "${params.ica_gene_map}".trim() != '',
          log_base: params.ica_log_base, pseudocount: params.ica_pseudocount,
          min_gene_coverage: params.ica_min_gene_coverage,

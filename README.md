@@ -1,395 +1,293 @@
 # seq_lm
 
-`seq_lm` is a Nextflow workflow for live or one-shot analysis of aligned Oxford
-Nanopore transcriptome sequencing data. It watches per-sample BAM directories,
-updates quality-control and expression analyses as stable BAM files arrive, and
-publishes a single interactive HTML report throughout the experiment.
+Live or one-shot analysis of aligned Oxford Nanopore transcriptome BAMs, with an
+interactive HTML report. Includes read QC, Oarfish quantification, transcript
+biotypes, edgeR differential expression, fry/GSVA gene-set analysis, and optional
+iModulon projection and MinKNOW stop control.
 
-The workflow supports:
-
-- chunk-level read and alignment quality control with NanoGet and `samtools`;
-- cumulative transcript quantification with Oarfish;
-- annotation-based transcript-biotype composition;
-- differential-expression analysis with edgeR;
-- directional gene-set testing with edgeR `fry` and sample-level scoring with
-  GSVA; and
-- optional monitoring that records when results stabilize or asks MinKNOW to
-  stop eligible acquisitions.
-
-The input BAMs must already be aligned to the genome represented by the supplied
-reference FASTA and annotation. Live results are provisional: expression and
-enrichment statistics are recalculated as additional reads arrive.
-
-## Analysis modes
-
-Reference inputs and analysis switches determine which parts of the workflow
-run. `--differential_expression` and `--gene_set_enrichment` both default to
-`true`.
-
-| Mode | Required inputs and options | Main results |
-| --- | --- | --- |
-| Quality control only | Sample sheet; set `--differential_expression=false --gene_set_enrichment=false` and omit both references | Per-chunk QC and the integrated report |
-| QC, quantification, and biotypes | Sample sheet, reference FASTA, and GTF/GFF3; set `--differential_expression=false --gene_set_enrichment=false` | QC, cumulative Oarfish quantification, and transcript-biotype composition |
-| Differential expression | Sample sheet, reference FASTA, and GTF/GFF3; set `--gene_set_enrichment=false` | QC, quantification, biotypes, and edgeR contrasts |
-| Full analysis | Sample sheet, reference FASTA, GTF/GFF3, and GMT gene sets | QC, quantification, edgeR, fry, and GSVA |
-
-`--reference_genome` and `--reference_annotation` must always be supplied
-together. Gene-set enrichment requires differential expression and a
-`--gene_sets` GMT file.
+[Quickstart](#quickstart) · [Analysis modes](#analysis-modes) ·
+[Parameters](#analysis-and-live-run-parameters) · [Guides](#guides)
 
 ## Quickstart
 
-### Requirements and platform support
+Requires **Nextflow ≥26.04.3**, **Java 17**, and **Docker** or
+**Singularity/Apptainer**. Nextflow fetches published images from Docker Hub.
+Windows users must run inside **WSL2** with Docker Desktop's WSL integration;
+EPI2ME Desktop on Windows is not supported.
 
-- [Nextflow](https://www.nextflow.io/) **26.04.3 or newer** and Java 17.
-- [Docker](https://www.docker.com/products/docker-desktop/) for the default
-  `standard` profile, or
-  [Singularity/Apptainer](https://docs.sylabs.io/guides/latest/user-guide/) for
-  the `singularity` profile.
-- Linux, macOS, or Windows through WSL2.
+### 1. Install
 
-Nextflow 26 is required because the workflow uses Nextflow's static type system
-and strict syntax. On Windows, this workflow must be launched from a Nextflow 26
-installation inside **WSL2**; launching it from the EPI2ME Desktop UI on Windows
-is not supported. Use Linux paths in WSL, for example `/mnt/c/data/experiment`,
-and enable Docker Desktop's WSL integration when using Docker.
-
-On Linux and macOS, the workflow can be launched either from the command line or
-through EPI2ME Desktop. The repository's Conda environment installs the required
-host-side Nextflow, Java, OpenSSL, MinKNOW API, and utility dependencies. The
-analysis programs themselves remain isolated in versioned Docker or Singularity
-containers.
-
-### 1. Install the host environment
-
-Clone the canonical repository and create the environment with Conda or Mamba:
+Install Docker separately, then use the supplied Conda environment for Nextflow,
+Java, and host utilities:
 
 ```bash
 git clone https://github.com/RNABioInfo/seq_lm.git
 cd seq_lm
 conda env create --file environment.yml
 conda activate seq-lm
-```
-
-Update an existing environment after `environment.yml` changes with:
-
-```bash
-conda env update --file environment.yml --prune
-conda activate seq-lm
-```
-
-Confirm the runtime and container engine before starting an analysis:
-
-```bash
 nextflow -version
-docker run --rm hello-world
-nextflow run . --help
 ```
 
-The reported Nextflow version must be at least `26.04.3`. If using
-Singularity/Apptainer, verify that runtime instead of Docker and select
-`-profile singularity` in the commands below.
+### 2. Prepare samples
 
-### 2. Use Nextflow 26 in EPI2ME Desktop on Linux or macOS
-
-EPI2ME Desktop may bundle an older Nextflow release. Fully quit EPI2ME, activate
-the `seq-lm` environment, and launch the application with `LABS_NXF_PATH`
-pointing to the Nextflow 26 executable.
-
-Linux:
-
-```bash
-conda activate seq-lm
-LABS_NXF_PATH="$(command -v nextflow)" /usr/lib/epi2me/EPI2ME
-```
-
-macOS:
-
-```bash
-conda activate seq-lm
-LABS_NXF_PATH="$(command -v nextflow)" /Applications/EPI2ME.app/Contents/MacOS/EPI2ME
-```
-
-Keep the terminal open while EPI2ME is running. Repeat this launch method after
-restarting the application so that it continues to use Nextflow 26.
-
-In EPI2ME:
-
-1. Open **Workflows**, choose **Import workflow**, and enter
-   `https://github.com/RNABioInfo/seq_lm`.
-2. Open `seq_lm` from **Installed workflows** and select **Run this workflow**.
-3. Complete the required input, reference, analysis, and output fields.
-4. Select **Launch workflow**, then monitor the run and open `qc_report.html`
-   from the results view.
-
-See the official
-[EPI2ME workflow import and launch guide](https://epi2me.nanoporetech.com/epi2me-docs/quickstart/)
-for general UI instructions.
-
-### 3. Prepare the sample sheet
-
-Pass a comma-separated sample sheet through `--sample_sheet`. Header names are
-case-sensitive.
+Save `samples.csv` with paths to your aligned BAM directories:
 
 ```csv
-alias,group,bam_dir,is_live,order
-control_1,control,/data/bams/control_1,false,0
-control_2,control,/data/bams/control_2,false,0
-treated_1,treated,/data/bams/treated_1,true,1
-treated_2,treated,/data/bams/treated_2,true,1
+alias,group,bam_dir,is_live
+control_1,control,/data/bams/control_1,true
+control_2,control,/data/bams/control_2,true
+treated_1,treated,/data/bams/treated_1,true
+treated_2,treated,/data/bams/treated_2,true
 ```
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `alias` | Yes | Sample name used in reports and output paths. It must be unique within its group. |
-| `group` | Yes | Experimental condition. At least two rows must use `control`, matched case-insensitively. Each other group is contrasted separately with the control group. |
-| `bam_dir` | Yes | Existing directory searched recursively for `.bam` files. The path must be visible to the selected container runtime. |
-| `is_live` | No | `true`, `false`, or blank, case-insensitively. Blank or missing values default to `true`. A row is watched only when this value and `--live_analysis` are both true. |
-| `order` | No | Signed integer elapsed time in minutes. Every row must provide it when `--timeline_analysis` is enabled. With active ICA, including this column automatically enables ICA time-course analysis. In temporal mode, each group is one independent-replicate time point: a group must have one order value and an order value must identify one group. |
+| `alias` | Yes | Sample name; unique within its group. |
+| `group` | Yes | Condition; use `control` for at least two samples. Other groups are compared with controls. |
+| `bam_dir` | Yes | Existing directory searched recursively for BAMs; accessible to the container. |
+| `is_live` | No | Watch this sample when `live_analysis` is also true. Blank or omitted means true. |
+| `order` | No | Signed integer elapsed minutes for temporal analysis. |
 
-Effectively live samples may start with an empty `bam_dir`. Samples that are not
-live are processed once and must contain at least one BAM when the workflow
-starts. A new live BAM is accepted only after its size and modification time are
-unchanged for `--bam_stability_polls` consecutive scans; the default is three
-polls at five-second intervals.
+Headers are case-sensitive. BAMs must match the reference genome, and read IDs
+must be unique across chunks of each sample. One-shot samples need at least one
+BAM at startup; live directories may start empty.
 
-Read identifiers must be globally unique across BAM chunks belonging to the
-same sample. Standard Nanopore UUID read identifiers normally satisfy this
-requirement.
+For temporal analysis, add `order` to every row: each group must have one time,
+each time one group, and at least two times are required. Samples represent
+independent replicates. This enables ICA time-course views automatically;
+gene-set time-course views additionally require `timeline_analysis = true`.
 
-### 4. Run the workflow
+### 3. Configure and run
 
-The following commands use Docker through the default `standard` profile and
-place Nextflow intermediates and published results in explicit directories.
+Save `run.config`, replacing the paths. This example runs QC, quantification,
+biotypes, and differential expression once on the available BAMs:
 
-#### Full live analysis
+```groovy
+params {
+    sample_sheet = "/path/to/samples.csv"
+    reference_genome = "/path/to/reference.fa"
+    reference_annotation = "/path/to/annotation.gtf"
+    out_dir = "/path/to/results"
+    live_analysis = false
+    differential_expression = true
+    gene_set_enrichment = false
+    timeline_analysis = false
+    ica_analysis = false
+}
+```
 
 ```bash
-nextflow run . \
-    -profile standard \
-    -w /path/to/seq_lm_work \
-    --sample_sheet /path/to/samples.csv \
-    --reference_genome /path/to/reference.fa \
-    --reference_annotation /path/to/annotation.gtf \
-    --gene_sets /path/to/pathways.gmt \
-    --out_dir /path/to/seq_lm_output
+nextflow run . -profile standard -c run.config -w /path/to/work
 ```
 
-#### One-shot full analysis
+Use `-profile singularity` for Singularity/Apptainer. Set parameters in the config:
+quote strings, but leave booleans and numbers unquoted. Explicit boolean/numeric
+CLI values reach this workflow as strings and fail schema validation.
 
-Process all BAMs present at startup and exit without watching for new files:
-
-```bash
-nextflow run . \
-    -profile standard \
-    -w /path/to/seq_lm_work \
-    --sample_sheet /path/to/samples.csv \
-    --live_analysis=false \
-    --reference_genome /path/to/reference.fa \
-    --reference_annotation /path/to/annotation.gtf \
-    --gene_sets /path/to/pathways.gmt \
-    --out_dir /path/to/seq_lm_output
-```
-
-#### Quality control only
-
-```bash
-nextflow run . \
-    -profile standard \
-    -w /path/to/seq_lm_qc_work \
-    --sample_sheet /path/to/samples.csv \
-    --differential_expression=false \
-    --gene_set_enrichment=false \
-    --out_dir /path/to/seq_lm_qc_output
-```
-
-#### Quantification and transcript-biotype QC
-
-```bash
-nextflow run . \
-    -profile standard \
-    -w /path/to/seq_lm_quant_work \
-    --sample_sheet /path/to/samples.csv \
-    --reference_genome /path/to/reference.fa \
-    --reference_annotation /path/to/annotation.gtf \
-    --differential_expression=false \
-    --gene_set_enrichment=false \
-    --out_dir /path/to/seq_lm_quant_output
-```
-
-#### Differential expression without gene-set enrichment
-
-```bash
-nextflow run . \
-    -profile standard \
-    -w /path/to/seq_lm_de_work \
-    --sample_sheet /path/to/samples.csv \
-    --reference_genome /path/to/reference.fa \
-    --reference_annotation /path/to/annotation.gtf \
-    --gene_set_enrichment=false \
-    --out_dir /path/to/seq_lm_de_output
-```
-
-The GitHub-hosted workflow can also be launched without a local clone by
-replacing `.` with `RNABioInfo/seq_lm`. Pin a release or revision with
-Nextflow's `-r` option when reproducibility across future workflow updates is
-required.
-
-### 5. Finish a live analysis
-
-When no more BAMs will arrive for a live sample, create a `STOP` marker inside
-that sample's `bam_dir`:
-
-```bash
-touch /data/bams/treated_1/STOP
-```
-
-The workflow drains any pending stable BAMs, finalizes the sample, and removes
-it from later synchronization barriers. Create a marker for every remaining
-live sample so the workflow can complete normally and replace the live report
-shell with the final self-contained report.
-
-## Stability monitoring and MinKNOW termination
-
-`--monitoring_behavior` controls actions based on differential-expression
-stability:
-
-- `disabled` performs no stability action and is the default;
-- `log` records when each sample would become eligible to stop; and
-- `terminate` sends a stop request to the corresponding MinKNOW acquisition and
-  creates the local `STOP` marker only after MinKNOW confirms the request.
-
-Stability is assessed independently for every non-control-versus-control
-contrast. With the default `--num_stable_batches 3`, the first successful edgeR
-snapshot establishes a baseline, so at least four successful snapshots are
-needed before a sample can become eligible.
-
-Termination requires a client certificate, private key, and MinKNOW root CA.
-After activating the host environment, generate credentials with:
-
-```bash
-seq-run-manager cert \
-    --minknow-client-certs-directory /path/to/minknow/conf/rpc-client-certs
-```
-
-Then provide the generated files when launching the workflow:
-
-```bash
-nextflow run . \
-    -profile standard \
-    -w /path/to/seq_lm_work \
-    --sample_sheet /path/to/samples.csv \
-    --reference_genome /path/to/reference.fa \
-    --reference_annotation /path/to/annotation.gtf \
-    --gene_sets /path/to/pathways.gmt \
-    --monitoring_behavior terminate \
-    --minknow_host host.docker.internal \
-    --minknow_port 9501 \
-    --minknow_client_certificate ~/.config/seq-run-manager/minknow/minknow_cert.pem \
-    --minknow_client_private_key ~/.config/seq-run-manager/minknow/minknow_key.pem \
-    --minknow_ca_certificate ~/.config/seq-run-manager/minknow/minknow_cert.crt \
-    --out_dir /path/to/seq_lm_output
-```
-
-For termination, the direct parent of each `bam_dir` should contain exactly one
-file matching `*sample_sheet*.csv`. The workflow matches its `alias` to the
-MinKNOW sheet's `sample_id` to discover the `protocol_run_id`. Missing or
-ambiguous metadata disables termination for that sample without stopping the
-analysis. Failed stop requests are warned about and retried after the next
-stable batch.
-
-See [Differential Expression Workflow](docs/differential_expression.md#differential-expression-stability)
-for stability metrics, audit fields, and certificate behavior.
-
-## Outputs and continuing an experiment
-
-The main published results under `--out_dir` include:
-
-```text
-qc_report.html
-qc_report_state.json
-qc_report_snapshot_<batch_index>.html
-<group>/<alias>/
-  FINAL
-  quantification/
-  qc/
-differential_expression/
-  batch_<batch_index>/
-  latest/
-stability/
-  batch_<analysis_index>/
-execution/
-  report.html
-  timeline.html
-  trace.txt
-```
-
-`qc_report.html` is the stable EPI2ME entry point. During live analysis it loads
-the newest complete immutable snapshot without reloading the outer page. After
-successful completion it is atomically replaced by the latest self-contained
-snapshot. Depending on the selected analysis mode, the report contains Quality
-Control, Transcript biotypes, Differential Analysis, Result Stability, Gene Set
-Enrichment, and Temporal Analysis views. Temporal Analysis is enabled with
-`--timeline_analysis`, requires gene-set enrichment, and summarizes a single
-trajectory over the sample-sheet `order` values. For a selected gene set, the
-report shows its raw GSVA-score trajectory and a gene-by-time heatmap. Heatmap
-cells are gene-wise z-scores of the replicate-mean
-`log2(TMM-normalized CPM + 1)` values, and average-linkage clustering groups
-genes with similar temporal profiles. Hovering retains each cell's absolute
-mean logCPM, SD, group, and replicate count. This view is descriptive: row
-standardization removes between-gene abundance differences, and clustering
-does not establish co-regulation or a statistically significant time effect.
-
-When a sample finishes, `seq_lm` persists its quantification and raw QC inputs
-and writes `FINAL` last. A later invocation using the same `--out_dir` validates
-and restores finalized samples, allowing new samples to extend an experiment
-without rerunning completed sample-level work. This mechanism is independent of
-Nextflow `-resume`. Changed BAMs, references, manifests, or derived artifacts
-cause validation to stop rather than silently reuse stale results. To recompute
-a finalized sample, remove its complete `<out_dir>/<group>/<alias>/` directory
-before launching a new run.
-
-See the detailed documentation for output contracts and interpretation:
-
-- [Analysis report and quality control](docs/quality_control.md)
-- [Quantification and transcript-biotype QC](docs/quantification.md)
-- [Differential expression, fry, GSVA, stability, and checkpoints](docs/differential_expression.md)
-- [Fixed-matrix iModulon projection and differential activity](docs/imodulon_analysis.md)
-
-## Prokaryotic annotations
-
-NCBI prokaryotic GTF files often omit the transcript and exon records Oarfish
-needs for protein-coding targets. Convert such an annotation before using it:
+For NCBI prokaryotic GTFs missing transcript/exon records, convert the annotation
+before running:
 
 ```bash
 bin/oarfish-gtf-convert genomic.gtf genomic.oarfish.gtf
 ```
 
-The converter preserves declared RNA models and creates one gene-sized,
-single-exon transcript for each eligible protein-coding gene. It does not infer
-operons, transcript boundaries, or untranslated regions. Prefer an
-experimentally curated transcript annotation when those units matter.
+Use the converted file as `reference_annotation`; see the
+[annotation guide](docs/quantification.md#prokaryotic-annotations).
 
-## Interpretation
+### 4. View results or run live
 
-Differential-expression, fry, and GSVA results describe associations in the
-tested organism, conditions, and sampling design. They do not establish causal
-drivers, biochemical pathway activity, or biological mechanism. Results from
-live batches may change as sequencing depth and statistical power increase;
-use the final checkpoint for downstream interpretation.
+Open `qc_report.html` in your results directory. For live analysis, set
+`live_analysis = true` in `run.config` before launching. The report updates as
+stable BAM chunks arrive.
 
-Temporal figures are descriptive summaries of independent biological
-replicates, not time-course significance tests. Their lines connect measured
-minutes but do not estimate unobserved intermediate states. Time-associated
-bulk-expression patterns may also reflect composition, batch, or other
-variables confounded with sampling time.
+When a live sample is finished, create a `STOP` file in its BAM directory (automatically in "terminate" monitoring behavior):
 
-## License and links
+```bash
+touch /data/bams/treated_1/STOP
+```
 
-This project is distributed under the terms in [LICENSE](LICENSE).
+Repeat for every live sample. The workflow drains pending data and saves the
+final report as a self-contained HTML file.
 
-- [Workflow repository](https://github.com/RNABioInfo/seq_lm)
-- [Nextflow documentation](https://www.nextflow.io/docs/latest/)
-- [EPI2ME Desktop documentation](https://epi2me.nanoporetech.com/epi2me-docs/)
-- [Docker documentation](https://docs.docker.com/)
-- [SingularityCE user guide](https://docs.sylabs.io/guides/latest/user-guide/)
+## Analysis modes
+
+Edit the switches below in `run.config`. All modes include QC. Supply the FASTA
+and GTF/GFF3 together; remove both reference settings for QC-only analysis.
+
+| Mode | Additional inputs | `differential_expression` | `gene_set_enrichment` | `ica_analysis` |
+| --- | --- | --- | --- | --- |
+| QC only | None | false | false | false |
+| Quantification and biotypes | Both references | false | false | false |
+| Differential expression | Both references | true | false | false |
+| Gene-set analysis | Both references, `gene_sets` GMT | true | true | false |
+| iModulon analysis | Both references, `ica_matrix` CSV/TSV | false | false | true |
+| Combined analysis | Both references, GMT, ICA matrix | true | true | true |
+
+Keep `timeline_analysis = false` unless gene-set enrichment is enabled and the
+sample sheet contains complete time metadata.
+
+For iModulons, use a compatible gene-by-component weight matrix. Add
+`ica_imodulon_table = "/path/to/iM_table.csv"` for names and functions from the
+**same model**, with one annotation row per component. The report shows
+**Time course details** when time metadata is present, otherwise **Component details**.
+Diagnostics contains the component annotations. See the
+[iModulon guide](docs/imodulon_analysis.md) for model formats and interpretation.
+
+## Outputs and restarting
+
+| Path under `out_dir` | Contents |
+| --- | --- |
+| `qc_report.html` | Main report; live updates during sequencing, self-contained on completion. |
+| `qc_report_state.json`, `qc_report_snapshot_revision_*.html` | Live-report state and immutable snapshots. |
+| `<group>/<alias>/` | Sample QC, quantification, and `FINAL` completion marker. |
+| `differential_expression/` | Differential-expression and gene-set results. |
+| `ica/` | iModulon snapshots; `latest.json` identifies the newest snapshot and readiness. |
+| `stability/` | Stability decisions and stop-control records. |
+| `execution/` | Nextflow report, timeline, and trace. |
+
+Reuse `out_dir` to restore finalized samples and extend an experiment. Changed
+inputs or references prevent checkpoint reuse. This is separate from Nextflow
+`-resume`; use a new output directory for a fresh analysis. Pin a workflow
+revision with `-r` when launching `RNABioInfo/seq_lm` directly.
+
+## EPI2ME Desktop (Linux/macOS)
+
+Fully quit EPI2ME, activate `seq-lm`, and point it to the installed Nextflow:
+
+```bash
+# Linux
+LABS_NXF_PATH="$(command -v nextflow)" /usr/lib/epi2me/EPI2ME
+
+# macOS
+LABS_NXF_PATH="$(command -v nextflow)" /Applications/EPI2ME.app/Contents/MacOS/EPI2ME
+```
+
+Keep the terminal open. In **Workflows → Import workflow**, enter
+`https://github.com/rnabioinfo/seq_lm`, then select **Run this workflow** and fill
+in the inputs. Repeat the launch command after restarting EPI2ME.
+
+## Stability monitoring and MinKNOW termination
+
+Set `monitoring_behavior = "log"` to record stop eligibility, or `"terminate"`
+to stop eligible acquisitions. Monitoring requires differential expression;
+termination also requires live analysis and MinKNOW credentials.
+
+Generate credentials in the activated `seq-lm` environment:
+
+```bash
+bin/seq-run-manager cert \
+    --minknow-client-certs-directory /path/to/minknow/conf/rpc-client-certs
+```
+
+Add these settings inside the existing `params` block in `run.config`:
+
+```groovy
+live_analysis = true
+monitoring_behavior = "terminate"
+minknow_client_certificate = "/path/to/minknow_cert.pem"
+minknow_client_private_key = "/path/to/minknow_key.pem"
+minknow_ca_certificate = "/path/to/minknow_cert.crt"
+```
+
+Each BAM directory's parent must contain one matching MinKNOW `*sample_sheet*.csv`.
+The workflow creates `STOP` only after MinKNOW confirms termination. See the
+[monitoring guide](docs/differential_expression.md#differential-expression-stability)
+for sample matching, stability criteria, and connection setup.
+
+## Analysis and live-run parameters
+
+Values belong in the config's `params` block. Defaults are from `nextflow.config`.
+`-c`, `-profile`, `-w`, and `-resume` are Nextflow launcher options.
+
+**Inputs and references**
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `sample_sheet` | Unset | CSV with sample names, groups, and BAM directories. |
+| `reference_genome` | Unset | Reference FASTA; required with the annotation. |
+| `reference_annotation` | Unset | Transcript GTF/GFF3; required with the FASTA. |
+| `gene_sets` | Unset | GMT gene sets for fry and GSVA. |
+
+**Live acquisition**
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `live_analysis` | `true` | Watch samples marked live in the sample sheet. |
+| `bam_poll_interval_seconds` | `5` | Seconds between BAM-directory scans. |
+| `bam_stability_polls` | `3` | Unchanged observations required before accepting a BAM. |
+
+**Differential expression and gene sets**
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `differential_expression` | `true` | Enable edgeR; requires both references. |
+| `gene_set_enrichment` | `true` | Enable fry and GSVA; requires edgeR and GMT gene sets. |
+| `timeline_analysis` | `false` | Enable temporal gene-set views; requires enrichment and sample order. |
+| `min_read_count` | `10000` | Minimum assigned reads per sample for edgeR readiness. |
+| `min_replicate_sample_count` | `2` | Minimum ready samples per group. |
+| `de_lfc_cutoff` | `1.0` | Absolute log₂ fold-change threshold for edgeR glmTreat. |
+| `de_padj_cutoff` | `0.05` | Maximum adjusted p-value for differential-expression calls. |
+
+**iModulon analysis**
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `ica_analysis` | `false` | Enable iModulon projection; requires a matrix and both references. |
+| `ica_matrix` | Unset | CSV/TSV gene-by-component weight matrix. |
+| `ica_imodulon_table` | Unset | Optional component names and functions for the exact model. |
+| `ica_gene_map` | Unset | Optional CSV/TSV with gene_id and model_gene_id columns. |
+| `ica_log_base` | `2.0` | Expression logarithm base; must exceed one. |
+| `ica_pseudocount` | `1.0` | Positive value added before logging gene abundance. |
+| `ica_min_gene_coverage` | `1.0` | Minimum fraction of model genes covered by annotation targets. |
+| `ica_min_read_count` | `10000` | Minimum assigned abundance in every sample for ICA readiness. |
+| `ica_padj_cutoff` | `0.05` | Maximum BH-adjusted p-value for component activity tests. |
+
+**Stability monitoring**
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `monitoring_behavior` | `"disabled"` | Stability action: disabled, log, or terminate. |
+| `num_stable_batches` | `3` | Consecutive stable comparisons required for stop eligibility. |
+| `stability_max_feature_diff_fraction` | `0.05` | Maximum fraction of filtered features added or removed. |
+| `stability_max_median_abs_lfc_delta` | `0.05` | Maximum median absolute change in log₂ fold change. |
+| `stability_min_jaccard_similarity` | `0.95` | Minimum overlap of sufficiently large DE-call sets. |
+| `stability_min_de_calls_for_fraction_metrics` | `20` | DE-call union size at which fractional metrics apply. |
+| `stability_max_small_set_call_changes` | `2` | Maximum DE-call changes for smaller call sets. |
+
+**MinKNOW connection**
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `minknow_host` | `"host.docker.internal"` | MinKNOW manager host. |
+| `minknow_port` | `9501` | MinKNOW manager port. |
+| `minknow_client_certificate` | Unset | PEM client certificate; required for termination. |
+| `minknow_client_private_key` | Unset | PEM client private key; required for termination. |
+| `minknow_ca_certificate` | Unset | PEM root CA certificate; required for termination. |
+
+**Outputs and logging**
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `out_dir` | `"output"` | Published results directory. |
+| `monochrome_logs` | `false` | Disable colored workflow log messages. |
+| `disable_ping` | `false` | Disable workflow start/completion telemetry. |
+
+**Help and validation**
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `help` | `false` | Display workflow help and exit. |
+| `version` | `false` | Display the workflow version and exit. |
+| `show_hidden_params` | `false` | Include hidden parameters in help output. |
+| `validate_params` | `true` | Validate parameters against the workflow schema. |
+
+## Guides
+
+- [QC and report](docs/quality_control.md)
+- [Quantification and annotations](docs/quantification.md)
+- [Differential expression, gene sets, and checkpoints](docs/differential_expression.md)
+- [iModulon analysis](docs/imodulon_analysis.md)
+
+## License
+
+See [LICENSE](LICENSE).

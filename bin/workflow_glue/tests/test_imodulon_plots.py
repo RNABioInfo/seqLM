@@ -271,7 +271,10 @@ def test_ready_snapshot_and_plots_support_literal_na_and_irregular_time(tmp_path
         == "Target elapsed time (min)"
     )
     heatmap = create_time_heatmap(data)
-    assert not hasattr(heatmap._fig.x_range, "factors")
+    assert heatmap._fig.x_range.factors == ["-5", "10", "40"]
+    assert heatmap._fig.renderers[0].glyph.width == 1.0
+    source = heatmap._fig.renderers[0].data_source.data
+    assert list(source["time_label"]) == [str(int(value)) for value in source["order"]]
     assert heatmap._fig.xaxis.axis_label == "Elapsed time (min)"
 
 
@@ -337,13 +340,22 @@ def test_snapshot_identity_mismatch_is_rejected(tmp_path):
         load_imodulon_results(write_ica_snapshot(tmp_path / "ica"), 7, 3, 12)
 
 
-def test_qc_report_adds_active_ica_timecourse_main_tab(tmp_path, monkeypatch):
-    snapshot = write_ica_snapshot(tmp_path / "ica")
+@pytest.mark.parametrize("temporal", [True, False])
+def test_qc_report_adds_active_ica_details_main_tab(tmp_path, monkeypatch, temporal):
+    times = [-5, -5, 10, 10, 40, 40] if temporal else [None] * 6
+    snapshot = write_ica_snapshot(tmp_path / "ica", times=times)
+    provenance_path = snapshot / "provenance.json"
+    provenance = json.loads(provenance_path.read_text())
+    provenance["model"]["component_metadata"] = {
+        "iM-A": {"name": "GbdR", "description": "Glycine Betaine Catabolism"},
+        "NA": {"name": "Literal NA", "description": "Function <unknown>"},
+    }
+    provenance_path.write_text(json.dumps(provenance))
     samples_frame = pd.DataFrame(
         {
             "Name": ["rep0", "rep1", "rep0", "rep1", "rep0", "rep1"],
             "Group": ["control", "control", "early", "early", "late", "late"],
-            "Time (min)": [-5, -5, 10, 10, 40, 40],
+            "Time (min)": times,
         }
     )
     monkeypatch.setattr(
@@ -395,13 +407,21 @@ def test_qc_report_adds_active_ica_timecourse_main_tab(tmp_path, monkeypatch):
     html = report.read_text()
     assert ">iModulon Analysis</button>" in html
     assert html.find("Quality Control") < html.find("iModulon Analysis")
-    assert "Time course" in html
+    assert (">Time course details</button>" in html) == temporal
+    assert (">Component details</button>" in html) != temporal
+    assert ">Time course</button>" not in html
+    assert "Component annotations" in html
+    assert "singular_value_index" not in html
+    assert "residual_sum_squares" not in html
+    assert "Statistical availability" not in html
     assert "Differential activity" in html
-    assert "Elapsed time (min)" in html
-    # The active ICA overview must contain a plot; plots in inactive nested tabs
-    # alone make a ready analysis look like a collection of tables.
-    assert html.count("Mean iModulon activity over elapsed time") == 2
-    assert "Component signs and scales belong to the supplied model" in html
+    assert ("Elapsed time (min)" in html) == temporal
+    assert html.count("Mean iModulon activity over elapsed time") == int(temporal)
+    assert "iM-A — GbdR" in html
+    assert "Glycine Betaine Catabolism" in html
+    assert "Function &lt;unknown&gt;" in html
+    assert ">Overview</button>" not in html
+    assert ">Methods</button>" not in html
     assert "Search components" in html
     assert '"iModulon Analysis"' in html
 
@@ -540,12 +560,35 @@ def test_heatmap_uses_sample_ids_even_with_colliding_display_labels(tmp_path):
     data.samples.loc[2, ["group", "alias"]] = ["a / b", "c"]
     data.samples.loc[3, ["group", "alias"]] = ["a", "b / c"]
     fig = create_activity_heatmap(data, list(data.components))._fig
-    assert fig.x_range.factors == data.samples.sample_id.tolist()
-    assert len(set(fig.x_range.factors)) == len(data.samples)
-    assert (
-        fig.xaxis[0].major_label_overrides["sample-2"]
-        == fig.xaxis[0].major_label_overrides["sample-3"]
-    )
+    assert fig.renderers[0].glyph.x == "sample_position"
+    assert (fig.x_range.start, fig.x_range.end) == (-0.5, len(data.samples) - 0.5)
+    assert fig.xaxis[0].ticker.ticks == list(range(len(data.samples)))
+    assert fig.xaxis[0].major_label_overrides[2] == fig.xaxis[0].major_label_overrides[3]
+    source = fig.renderers[0].data_source.data
+    assert list(source["sample_id"]) == data.activities.sample_id.tolist()
+    assert list(source["activity"]) == data.activities.activity.tolist()
+    positions = dict(zip(source["sample_id"], source["sample_position"]))
+    assert positions == {sid: i for i, sid in enumerate(data.samples.sample_id)}
+    assert "sample_position" not in data.activities
+
+    # Check the serialized keys: string-only maps deserialize as plain objects
+    # in BokehJS 3.1.1 and abort the entire shared report document.
+    from bokeh.embed import json_item
+
+    def overrides(value):
+        if isinstance(value, dict):
+            if "major_label_overrides" in value:
+                yield value["major_label_overrides"]
+            for child in value.values():
+                yield from overrides(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from overrides(child)
+
+    serialized = list(overrides(json_item(fig)))
+    assert len(serialized) == 1
+    assert serialized[0]["type"] == "map"
+    assert all(isinstance(key, (int, float)) for key, _ in serialized[0]["entries"])
 
 
 def test_loader_accepts_actual_analysis_cli_outputs(tmp_path):
@@ -593,3 +636,57 @@ def test_loader_accepts_actual_analysis_cli_outputs(tmp_path):
         )
         data = load_imodulon_results(tmp_path / name, 0, 0, 0)
         assert data.ready == (name == "ready")
+
+
+def test_component_annotations_preserve_ids_and_expose_names(tmp_path):
+    root = write_ica_snapshot(tmp_path / "ica")
+    path = root / "provenance.json"
+    provenance = json.loads(path.read_text())
+    provenance["model"]["component_metadata"] = {
+        "iM-A": {"name": "GbdR", "description": "Glycine Betaine Catabolism"},
+        "NA": {"name": "GbdR", "description": "Another component"},
+    }
+    path.write_text(json.dumps(provenance))
+    data = load_imodulon_results(root)
+    assert data.components == ("iM-A", "NA")
+    heatmap = create_activity_heatmap(data, list(data.components))._fig
+    assert heatmap.y_range.factors == ["NA — GbdR", "iM-A — GbdR"]
+    assert heatmap.renderers[0].glyph.y == "component_label"
+    assert data.activities.loc[0, "component_description"] == "Glycine Betaine Catabolism"
+    assert "GbdR" in create_component_distribution(data, "iM-A")._fig.title.text
+    assert data.differential.component_id.tolist() == ["iM-A", "iM-A", "NA", "NA"]
+
+
+def test_component_annotations_reject_wrong_model(tmp_path):
+    root = write_ica_snapshot(tmp_path / "ica")
+    path = root / "provenance.json"
+    provenance = json.loads(path.read_text())
+    provenance["model"]["component_metadata"] = {"unknown": {"name": "GbdR"}}
+    path.write_text(json.dumps(provenance))
+    with pytest.raises(ValueError, match="metadata must match"):
+        load_imodulon_results(root)
+
+
+def test_deferred_report_shows_only_annotations_in_diagnostics(tmp_path):
+    from dominate import document
+    from workflow_glue.qc_report_types.imodulon_plots import add_imodulon_analysis
+
+    snapshot = write_ica_snapshot(tmp_path / "ica", status="deferred")
+    provenance_path = snapshot / "provenance.json"
+    provenance = json.loads(provenance_path.read_text())
+    provenance["model"]["component_metadata"] = {
+        "iM-A": {"name": "GbdR", "description": "Glycine Betaine Catabolism"},
+        "NA": {"name": "Literal NA"},
+    }
+    provenance_path.write_text(json.dumps(provenance))
+    page = document()
+    with page:
+        add_imodulon_analysis(load_imodulon_results(snapshot))
+    html = page.render()
+    assert "analysis is deferred" in html
+    assert "Component annotations" in html
+    assert "Glycine Betaine Catabolism" in html
+    assert html.count("<table ") == 1
+    assert "Component details" not in html
+    assert "Time course details" not in html
+    assert "assigned_abundance" not in html

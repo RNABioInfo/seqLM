@@ -20,8 +20,8 @@ workflow {
             })
     }
     imodulon_analysis(channel.fromList(batches), root.resolve('matrix.csv'),
-        root.resolve('annotation.gtf'), root.resolve('matrix.csv'),
-        [has_gene_map: false, min_gene_coverage: 1.0, log_base: 2.0,
+        root.resolve('annotation.gtf'), root.resolve('matrix.csv'), root.resolve('iM_table.csv'),
+        [has_gene_map: false, has_imodulon_table: true, min_gene_coverage: 1.0, log_base: 2.0,
          pseudocount: 1.0, min_read_count: 0, padj_cutoff: 0.05], first, out_root)
     imodulon_analysis.out.snapshots.collect().view { results ->
         assert results*.analysis_index == [first, first + 1]
@@ -34,6 +34,9 @@ workflow {
         assert initial.status == 'deferred'
         assert !results[0].results.resolve('activities.tsv').exists()
         assert results[1].results.resolve('activities.tsv').exists()
+        def provenance = new groovy.json.JsonSlurper().parse(results[1].results.resolve('provenance.json').toFile())
+        assert provenance.model.component_metadata.positive.name == 'Carbon'
+        assert provenance.model.hashes.imodulon_table
         assert next_ica_snapshot_index(out_root) == first + 2
         def rejected: Boolean = false
         try {

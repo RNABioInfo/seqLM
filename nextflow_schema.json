@@ -136,7 +136,11 @@
       "properties": {
         "monitoring_behavior": {
           "type": "string",
-          "enum": ["disabled", "log", "terminate"],
+          "enum": [
+            "disabled",
+            "log",
+            "terminate"
+          ],
           "default": "disabled",
           "description": "Action when for a live sample all given contrasts are stable. Options: disabled = No action, log = Log to the console when an acquisition whould be terminated, stop = acquisition is terminated (requires Minknow credentials)"
         },
@@ -186,13 +190,6 @@
       "fa_icon": "fas fa-folder-open",
       "description": "Names and locations used for workflow outputs.",
       "properties": {
-        "ex_name": {
-          "type": "string",
-          "minLength": 1,
-          "default": "seq_lm",
-          "fa_icon": "fas fa-flask",
-          "description": "Name used to identify the experiment in workflow metadata and reports."
-        },
         "out_dir": {
           "type": "string",
           "format": "path",
@@ -238,25 +235,11 @@
         }
       }
     },
-    "resource_options": {
-      "title": "Resource Options",
-      "type": "object",
-      "fa_icon": "fas fa-microchip",
-      "description": "Global analysis limits retained for processes that consume them.",
-      "properties": {
-        "min_mapq": {
-          "type": "integer",
-          "minimum": 0,
-          "default": 10,
-          "description": "Minimum read mapping quality available to analysis steps that apply a mapping-quality filter."
-        }
-      }
-    },
     "advanced_options": {
       "title": "Advanced Options",
       "type": "object",
       "fa_icon": "fas fa-cogs",
-      "description": "Telemetry, cloud, validation, and internal workflow settings.",
+      "description": "Telemetry, logging, validation, and internal workflow settings.",
       "properties": {
         "disable_ping": {
           "type": "boolean",
@@ -278,25 +261,9 @@
           "default": false,
           "description": "Include internal parameters in command-line help output."
         },
-        "aws_image_prefix": {
-          "type": "string",
-          "description": "Prefix applied to container image names when running on AWS.",
-          "hidden": true
-        },
-        "aws_queue": {
-          "type": "string",
-          "description": "AWS Batch queue used by an AWS execution profile.",
-          "hidden": true
-        },
-        "process_label": {
-          "type": "string",
-          "default": "seq_lm",
-          "description": "Default Nextflow process label used by workflow processes.",
-          "hidden": true
-        },
         "schema_ignore_params": {
           "type": "string",
-          "default": "show_hidden_params,validate_params,monochrome_logs,aws_queue,aws_image_prefix,wf,live_analysis",
+          "default": "show_hidden_params,validate_params,monochrome_logs,wf,live_analysis",
           "description": "Comma-separated parameters excluded from schema validation.",
           "hidden": true
         },
@@ -332,6 +299,12 @@
           "format": "path",
           "description": "ICA gene-by-component weights CSV/TSV. Supplying this enables iModulon analysis unless ica_analysis is false.",
           "help_text": "When ICA is enabled, requires both reference inputs. First column: gene IDs; remaining columns: named components. Controls supply the baseline. No activity matrix or metadata sidecar is required."
+        },
+        "ica_imodulon_table": {
+          "type": "string",
+          "format": "path",
+          "description": "Optional model-specific PyModulon/iModulonDB component annotations CSV/TSV.",
+          "help_text": "Requires matching matrix component IDs in component_id, k, or the first index column, plus name. Supports function/description, regulator/regulator_readable, and category. Every matrix component must match exactly once."
         },
         "ica_gene_map": {
           "type": "string",
@@ -391,9 +364,6 @@
     },
     {
       "$ref": "#/definitions/minknow_options"
-    },
-    {
-      "$ref": "#/definitions/resource_options"
     },
     {
       "$ref": "#/definitions/advanced_options"

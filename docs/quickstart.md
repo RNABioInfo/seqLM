@@ -8,7 +8,8 @@ The workflow can currently be run using either
 [Docker](https://www.docker.com/products/docker-desktop) or
 [Singularity](https://docs.sylabs.io/guides/latest/user-guide/) to provide isolation of
 the required software. Both methods are automated out-of-the-box provided
-either Docker or Singularity is installed.
+either Docker or Singularity is installed. Nextflow automatically fetches the
+configured, versioned images from Docker Hub through the selected runtime.
 
 It is not required to clone or download the git repository in order to run the workflow.
 For more information on running EPI2ME Labs workflows [visit out website](https://labs.epi2me.io/wfindex).

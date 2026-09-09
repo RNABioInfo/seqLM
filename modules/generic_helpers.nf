@@ -65,17 +65,6 @@ def get_seq_summary_file(bam_file: Path) -> Path {
     return optional_file()
 }
 
-def get_sequencing_arguments(_run_dir: Path) -> Map {
-    def args: Map = [:]
-    args['experiment_id'] = params.ex_name
-    args['run_id'] = params.ex_run_number
-    args['kit'] = params.ex_kit
-    if (!params.ex_special_alignment) {
-        args['reference_genome'] = params.reference_genome
-    }
-    args['basecall_model'] = params.ex_basecall_model
-    return args
-}
 
 def validate_experiment_dir(experiment_path: Path, run_number: Integer) {
     def experiment_dir = new File(experiment_path)

@@ -9,6 +9,7 @@ import tempfile
 def fixture(root):
     root = Path(root)
     (root / "matrix.csv").write_text(",positive,negative\ng1,1,0\ng2,0,-2\n")
+    (root / "iM_table.csv").write_text("k,name,function\npositive,Carbon,Carbon use\nnegative,Stress,Stress response\n")
     (root / "annotation.gtf").write_text(
         'chr\ttest\ttranscript\t1\t100\t.\t+\t.\tgene_id "g1"; transcript_id "t1"; locus_tag "LOC1";\n'
         'chr\ttest\ttranscript\t1\t100\t.\t+\t.\tgene_id "g1"; transcript_id "t1b";\n'

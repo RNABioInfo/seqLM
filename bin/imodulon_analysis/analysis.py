@@ -14,12 +14,13 @@ import numpy as np
 import pandas as pd
 import scipy
 from scipy import stats
-
+from workflow_glue.imodulon_metadata import read_component_metadata
 from workflow_glue.transcript_biotypes import (
     TRANSCRIPT_FEATURES,
     identifier_aliases,
     read_annotation,
 )
+
 from . import __version__
 
 
@@ -140,12 +141,15 @@ def annotation_targets(path):
     return gene_aliases, transcripts, transcript_aliases
 
 
-def prepare(matrix, annotation, gene_map, min_coverage, output):
+def prepare(matrix, annotation, gene_map, min_coverage, output, imodulon_table=None):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
     table = read_table(matrix)
     genes = identifiers(table.iloc[:, 0], "Matrix genes")
     components = identifiers(table.columns[1:], "Matrix components")
+    component_metadata = (
+        read_component_metadata(imodulon_table, components) if imodulon_table else {}
+    )
     weights = numeric(table.iloc[:, 1:], "Matrix weights")
     aliases, transcripts, transcript_aliases = annotation_targets(annotation)
     genes_with_targets = set(transcripts.values())
@@ -172,13 +176,13 @@ def prepare(matrix, annotation, gene_map, min_coverage, output):
         candidates = set(candidates) & genes_with_targets
         if len(candidates) > 1:
             rows.append(
-                dict(
-                    model_gene_id=gene,
-                    gene_id="",
-                    transcript_id="",
-                    method="alias",
-                    status="ambiguous",
-                )
+                {
+                    "model_gene_id": gene,
+                    "gene_id": "",
+                    "transcript_id": "",
+                    "method": "alias",
+                    "status": "ambiguous",
+                }
             )
         elif candidates:
             source = next(iter(candidates))
@@ -189,23 +193,23 @@ def prepare(matrix, annotation, gene_map, min_coverage, output):
             matches[gene] = source
             for transcript in sorted(t for t, g in transcripts.items() if g == source):
                 rows.append(
-                    dict(
-                        model_gene_id=gene,
-                        gene_id=source,
-                        transcript_id=transcript,
-                        method="explicit" if gene_map else "annotation",
-                        status="mapped",
-                    )
+                    {
+                        "model_gene_id": gene,
+                        "gene_id": source,
+                        "transcript_id": transcript,
+                        "method": "explicit" if gene_map else "annotation",
+                        "status": "mapped",
+                    }
                 )
         else:
             rows.append(
-                dict(
-                    model_gene_id=gene,
-                    gene_id="",
-                    transcript_id="",
-                    method="explicit" if gene_map else "annotation",
-                    status="missing",
-                )
+                {
+                    "model_gene_id": gene,
+                    "gene_id": "",
+                    "transcript_id": "",
+                    "method": "explicit" if gene_map else "annotation",
+                    "status": "missing",
+                }
             )
     pd.DataFrame(rows).to_csv(output / "gene_mapping.tsv", sep="\t", index=False)
     if any(r["status"] == "ambiguous" for r in rows):
@@ -224,17 +228,17 @@ def prepare(matrix, annotation, gene_map, min_coverage, output):
     if not np.isfinite(singular).all() or not math.isfinite(tolerance):
         raise ValueError("Matrix scale exceeds numerical precision for SVD")
     rank = int((singular > tolerance).sum())
-    diagnostics = dict(
-        rank=rank,
-        singular_values=singular.tolist(),
-        rank_tolerance=float(tolerance),
-        condition_number=float(singular[0] / singular[-1])
-        if singular[-1] > 0
-        else None,
-        shared_gene_count=len(shared),
-        model_gene_count=len(genes),
-        gene_coverage=coverage,
-    )
+    diagnostics = {
+        "rank": rank,
+        "singular_values": singular.tolist(),
+        "rank_tolerance": float(tolerance),
+        "condition_number": (
+            float(singular[0] / singular[-1]) if singular[-1] > 0 else None
+        ),
+        "shared_gene_count": len(shared),
+        "model_gene_count": len(genes),
+        "gene_coverage": coverage,
+    }
     write_json(output / "diagnostics.json", diagnostics)
     if rank != len(components):
         raise ValueError(
@@ -257,34 +261,36 @@ def prepare(matrix, annotation, gene_map, min_coverage, output):
     # overflow for otherwise valid, arbitrarily scaled ICA components.
     column_scale = np.max(np.abs(weights), axis=0)
     pd.DataFrame(
-        dict(
-            component_id=components,
-            gene_coverage=coverage,
-            retained_squared_weight_fraction=np.sum((m / column_scale) ** 2, axis=0)
+        {
+            "component_id": components,
+            "gene_coverage": coverage,
+            "retained_squared_weight_fraction": np.sum((m / column_scale) ** 2, axis=0)
             / np.sum((weights / column_scale) ** 2, axis=0),
-        )
+        }
     ).to_csv(output / "component_coverage.tsv", sep="\t", index=False)
     np.savez(output / "basis.npz", weights=m, inverse=inverse)
     write_json(
         output / "model.json",
-        dict(
-            schema_version=1,
-            genes=shared,
-            components=components,
-            transcript_map=transcript_map,
-            transcript_aliases={
+        {
+            "schema_version": 1,
+            "genes": shared,
+            "components": components,
+            "component_metadata": component_metadata,
+            "transcript_map": transcript_map,
+            "transcript_aliases": {
                 a: next(iter(ts))
                 for a, ts in transcript_aliases.items()
                 if len(ts) == 1
             },
-            diagnostics=diagnostics,
-            min_gene_coverage=min_coverage,
-            hashes=dict(
-                matrix=sha256(matrix),
-                annotation=sha256(annotation),
-                gene_map=sha256(gene_map) if gene_map else None,
-            ),
-        ),
+            "diagnostics": diagnostics,
+            "min_gene_coverage": min_coverage,
+            "hashes": {
+                "matrix": sha256(matrix),
+                "imodulon_table": sha256(imodulon_table) if imodulon_table else None,
+                "annotation": sha256(annotation),
+                "gene_map": sha256(gene_map) if gene_map else None,
+            },
+        },
     )
 
 
@@ -421,100 +427,127 @@ def analyze(
     prepared, output = Path(prepared), Path(output)
     output.mkdir(parents=True, exist_ok=False)
     model = json.loads((prepared / "model.json").read_text())
+
     with np.load(prepared / "basis.npz", allow_pickle=False) as basis:
         m, inverse = basis["weights"], basis["inverse"]
+
     metadata = read_table(manifest)
+
     if not {"name", "group", "count_file"}.issubset(metadata.columns):
         raise ValueError("Manifest requires name, group, count_file")
+    
     for column in ("name", "group"):
         metadata[column] = metadata[column].str.strip()
         if metadata[column].eq("").any():
             raise ValueError(f"Missing manifest {column}")
+        
     metadata["sample_id"] = [
         stable_sample_id(g, n) for g, n in zip(metadata.group, metadata.name)
     ]
+
     identifiers(metadata.sample_id, "Samples")
+
     control_labels = set(
         metadata.loc[metadata.group.str.lower().eq("control"), "group"]
     )
+
     if len(control_labels) != 1:
         raise ValueError("Require one unambiguous case-insensitive control group label")
+    
     control_group = next(iter(control_labels))
     control = metadata.group.eq(control_group).to_numpy()
+
     if control.sum() < 2:
         raise ValueError("Require at least two control samples")
+    
     for field in ("order", "source_batch_index"):
         if field not in metadata:
             metadata[field] = ""
+
     metadata = metadata.rename(columns={"name": "alias"})
     abundance = np.zeros((len(model["genes"]), len(metadata)))
     positions = {g: i for i, g in enumerate(model["genes"])}
     hashes, totals = [], []
+
     for sample_index, row in metadata.iterrows():
         path = Path(counts_dir) / row.count_file
         counts = read_table(path)
+
         if not {"tname", "num_reads"}.issubset(counts.columns):
             raise ValueError(f"{path}: requires tname and num_reads")
+        
         ids = identifiers(counts.tname, f"{path} targets")
         values = numeric(counts.num_reads, f"{path} abundance", nonnegative=True)
         total = float(values.sum())
+
         if not math.isfinite(total):
             raise ValueError(f"{path}: total abundance is not finite")
+        
         resolved = {}
         for identifier, value in zip(ids, values):
             transcript = model["transcript_aliases"].get(identifier, identifier)
+
             if transcript in resolved:
                 raise ValueError(
                     f"{path}: duplicate quantification target after alias resolution: {transcript}"
                 )
+            
             resolved[transcript] = value
+
         missing = set(model["transcript_map"]) - set(resolved)
+
         if missing:
             raise ValueError(
                 f"{path}: missing expected quantification targets: {sorted(missing)[:10]}"
             )
+        
         for transcript, gene in model["transcript_map"].items():
             abundance[positions[gene], sample_index] += resolved[transcript]
+
         totals.append(total)
         hashes.append(dict(sample_id=row.sample_id, sha256=sha256(path)))
+
     metadata["assigned_abundance"] = totals
     metadata["ready"] = [(t > 0 and t >= min_reads) for t in totals]
     metadata.to_csv(output / "sample_metadata.tsv", sep="\t", index=False)
-    provenance = dict(
-        schema_version=1,
-        batch_index=batch_index,
-        analysis_index=analysis_index,
-        report_sequence=report_sequence,
-        model=model,
-        quantifications=hashes,
-        manifest_sha256=sha256(manifest),
-        settings=dict(
-            log_base=log_base,
-            pseudocount=pseudocount,
-            min_read_count=min_reads,
-            padj_cutoff=cutoff,
-            normalization="all Oarfish assigned abundance per million; no length correction",
-        ),
-        control_sample_ids=metadata.loc[control, "sample_id"].tolist(),
-        software=dict(
-            imodulon_analysis=__version__,
-            numpy=np.__version__,
-            scipy=scipy.__version__,
-            pandas=pd.__version__,
-        ),
-    )
+    provenance = {
+        "schema_version": 1,
+        "batch_index": batch_index,
+        "analysis_index": analysis_index,
+        "report_sequence": report_sequence,
+        "model": model,
+        "quantifications": hashes,
+        "manifest_sha256": sha256(manifest),
+        "settings": {
+            "log_base": log_base,
+            "pseudocount": pseudocount,
+            "min_read_count": min_reads,
+            "padj_cutoff": cutoff,
+            "normalization": "all Oarfish assigned abundance per million; no length correction",
+        },
+        "control_sample_ids": metadata.loc[control, "sample_id"].tolist(),
+        "software": {
+            "imodulon_analysis": __version__,
+            "numpy": np.__version__,
+            "scipy": scipy.__version__,
+            "pandas": pd.__version__,
+        },
+    }
+
     write_json(output / "provenance.json", provenance)
+
     if not metadata.ready.all():
         write_json(
             output / "status.json",
-            dict(
-                status="deferred",
-                reason="insufficient_assigned_abundance",
-                sample_ids=metadata.loc[~metadata.ready, "sample_id"].tolist(),
-                statistical_availability="unavailable",
-            ),
+            {
+                "status": "deferred",
+                "reason": "insufficient_assigned_abundance",
+                "sample_ids": metadata.loc[~metadata.ready, "sample_id"].tolist(),
+                "statistical_availability": "unavailable",
+            },
         )
         return
+    
     abundance = abundance / np.asarray(totals) * 1e6
     logged = np.log(abundance + pseudocount) / np.log(log_base)
     reference = logged[:, control].mean(axis=1)
@@ -522,28 +555,35 @@ def analyze(
     activities = inverse @ centered
     raw_activities = inverse @ logged
     residual = centered - m @ activities
+
     if not all(
         np.isfinite(x).all() for x in (logged, activities, raw_activities, residual)
     ):
         raise ValueError(
             "Projection produced nonfinite values; check matrix scaling and transformation"
         )
+    
     ids = metadata.sample_id.tolist()
     pd.DataFrame(
         activities,
         index=pd.Index(model["components"], name="component_id"),
         columns=ids,
     ).to_csv(output / "activities.tsv", sep="\t")
+
     pd.DataFrame(
         centered, index=pd.Index(model["genes"], name="model_gene_id"), columns=ids
     ).to_csv(output / "centered_expression.tsv", sep="\t")
+
     pd.DataFrame(
-        dict(
-            model_gene_id=model["genes"],
-            reference_expression=reference,
-            control_sample_ids=json.dumps(metadata.loc[control, "sample_id"].tolist()),
-        )
+        {
+            "model_gene_id": model["genes"],
+            "reference_expression": reference,
+            "control_sample_ids": json.dumps(
+                metadata.loc[control, "sample_id"].tolist()
+            ),
+        }
     ).to_csv(output / "reference_expression.tsv", sep="\t", index=False)
+
     long = (
         pd.DataFrame(
             activities,
@@ -558,6 +598,7 @@ def analyze(
             validate="many_to_one",
         )
     )
+
     long.to_csv(output / "activities_long.tsv", sep="\t", index=False)
     long.groupby(["component_id", "group"], sort=False).activity.agg(
         ["mean", "std", "count"]
@@ -573,31 +614,35 @@ def analyze(
     ratio = np.divide(
         error, denominator, out=np.full_like(error, np.nan), where=denominator > 0
     )
+
     pd.DataFrame(
-        dict(
-            sample_id=ids,
-            residual_sum_squares=error,
-            centered_sum_squares=denominator,
-            residual_rmse=np.sqrt(error / len(model["genes"])),
-            normalized_residual=ratio,
-        )
+        {
+            "sample_id": ids,
+            "residual_sum_squares": error,
+            "centered_sum_squares": denominator,
+            "residual_rmse": np.sqrt(error / len(model["genes"])),
+            "normalized_residual": ratio,
+        }
     ).to_csv(output / "projection_qc.tsv", sep="\t", index=False)
+
     for filename in ("gene_mapping.tsv", "component_coverage.tsv"):
         (output / filename).write_bytes((prepared / filename).read_bytes())
+
     tested = int(differential.status.eq("tested").sum())
+    
     write_json(
         output / "status.json",
-        dict(
-            status="ready",
-            tested_count=tested,
-            untested_count=len(differential) - tested,
-            statistical_availability="complete"
-            if tested and tested == len(differential)
-            else "partial"
-            if tested
-            else "unavailable",
-            statistical_status_counts=differential.status.value_counts().to_dict(),
-        ),
+        {
+            "status": "ready",
+            "tested_count": tested,
+            "untested_count": len(differential) - tested,
+            "statistical_availability": (
+                "complete"
+                if tested and tested == len(differential)
+                else "partial" if tested else "unavailable"
+            ),
+            "statistical_status_counts": differential.status.value_counts().to_dict(),
+        },
     )
 
 
@@ -619,6 +664,10 @@ def main():
     prep.add_argument("--matrix", required=True)
     prep.add_argument("--annotation", required=True)
     prep.add_argument("--gene-map")
+    prep.add_argument(
+        "--imodulon-table",
+        help="Model-specific iModulon names and functions CSV/TSV.",
+    )
     prep.add_argument(
         "--min-gene-coverage", type=lambda x: finite_number(x, 0, 1), default=1.0
     )

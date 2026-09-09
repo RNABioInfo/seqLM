@@ -400,13 +400,8 @@ expression summary rather than a biochemical pathway-activity assay, and bulk
 temporal patterns can reflect composition, batch, or another variable
 confounded with time.
 
-The workflow uses `rnabioinfo/seq_lm_gsva:v1.1.0`. Build and publish that image
-before deploying this workflow version:
-
-```bash
-docker_containers/helper_scripts/build_and_publish_docker_image.sh \
-    seq_lm_gsva rnabioinfo
-```
+Nextflow automatically fetches the published `rnabioinfo/seq_lm_gsva:v1.1.0`
+image from Docker Hub through the selected container runtime.
 
 Organism- and strain-specific carbon-stress GMT files are documented in
 [`data/gene_sets/README.md`](../data/gene_sets/README.md).

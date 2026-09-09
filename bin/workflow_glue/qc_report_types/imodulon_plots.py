@@ -62,6 +62,46 @@ class IModulonResult:
         return self.status["status"] == "ready"
 
 
+def component_label(data: IModulonResult, component: str) -> str:
+    metadata = data.provenance.get("model", {}).get("component_metadata", {})
+    name = metadata.get(component, {}).get("name", "")
+    return f"{component} — {name}" if name and name != component else component
+
+
+def annotate_components(data: IModulonResult) -> None:
+    """Attach display annotations without changing statistical component IDs."""
+    metadata = data.provenance.get("model", {}).get("component_metadata", {})
+    if not isinstance(metadata, dict) or (
+        metadata and set(metadata) != set(data.components)
+    ):
+        raise ValueError("ICA component metadata must match the model component IDs")
+    for value in metadata.values():
+        if not isinstance(value, dict) or any(
+            not isinstance(value.get(field, ""), str)
+            for field in ("name", "description", "regulator", "category")
+        ):
+            raise ValueError("ICA component metadata fields must be strings")
+    for frame in (data.activities, data.summary, data.differential, data.coverage):
+        if frame is None:
+            continue
+        frame["component_label"] = frame.component_id.map(
+            lambda key: component_label(data, key)
+        )
+        for field in ("name", "description", "regulator", "category"):
+            frame[f"component_{field}"] = frame.component_id.map(
+                lambda key: metadata.get(key, {}).get(field, "")
+            )
+
+
+def _component_description(data: IModulonResult, component: str) -> None:
+    from dominate.tags import p
+
+    metadata = data.provenance.get("model", {}).get("component_metadata", {})
+    description = metadata.get(component, {}).get("description", "")
+    if description:
+        p(description)
+
+
 def _read_tsv(path: Path) -> pd.DataFrame:
     if not path.is_file():
         raise ValueError(f"ICA report input is missing: {path}")
@@ -453,6 +493,7 @@ def load_imodulon_results(
                     "ICA differential activity must preserve every component per contrast"
                 )
     _validate_statistics(result)
+    annotate_components(result)
     return result
 
 
@@ -624,14 +665,18 @@ def create_activity_heatmap(data: IModulonResult, selected: list[str]) -> BokehP
         .to_dict()
     )
     rows["sample_label"] = rows["sample_id"].map(labels)
+    # BokehJS 3.1.1 rejects string-keyed major_label_overrides on load.
+    # Numeric positions also keep samples distinct when display labels collide.
+    positions = {sample_id: index for index, sample_id in enumerate(labels)}
+    rows["sample_position"] = rows["sample_id"].map(positions)
     limit = max(float(data.activities["activity"].abs().max()), np.finfo(float).eps)
     mapper = LinearColorMapper(
         palette=cc.b_diverging_bwr_20_95_c54, low=-limit, high=limit
     )
     plot = BokehPlot(
         title="Control-centered iModulon activities",
-        x_range=data.samples["sample_id"].tolist(),
-        y_range=list(reversed(selected)),
+        x_range=(-0.5, len(labels) - 0.5),
+        y_range=[component_label(data, key) for key in reversed(selected)],
         x_axis_location="above",
         x_axis_label="Biological sample",
         y_axis_label="Component",
@@ -639,10 +684,13 @@ def create_activity_heatmap(data: IModulonResult, selected: list[str]) -> BokehP
         sizing_mode="stretch_width",
         tools="pan,wheel_zoom,save,reset",
     )
-    plot._fig.xaxis.major_label_overrides = labels
+    plot._fig.xaxis.ticker = FixedTicker(ticks=list(positions.values()))
+    plot._fig.xaxis.major_label_overrides = {
+        float(positions[sample_id]): label for sample_id, label in labels.items()
+    }
     glyph = plot._fig.rect(
-        "sample_id",
-        "component_id",
+        "sample_position",
+        "component_label",
         0.98,
         0.98,
         source=ColumnDataSource(rows),
@@ -654,6 +702,8 @@ def create_activity_heatmap(data: IModulonResult, selected: list[str]) -> BokehP
             renderers=[glyph],
             tooltips=[
                 ("Component", "@component_id"),
+                ("Name", "@component_name"),
+                ("Function", "@component_description"),
                 ("Sample", "@alias"),
                 ("Group", "@group"),
                 ("Activity", "@activity{0.0000}"),
@@ -671,7 +721,7 @@ def create_component_distribution(data: IModulonResult, component: str) -> Bokeh
     rows = data.activities.loc[data.activities["component_id"].eq(component)].copy()
     groups, colors = list(data.groups), _colors(data.groups)
     plot = BokehPlot(
-        title=f"Biological sample activities — {component}",
+        title=f"Biological sample activities — {component_label(data, component)}",
         x_range=(0.5, len(groups) + 0.5),
         x_axis_label="Group",
         y_axis_label="Control-centered activity",
@@ -781,6 +831,8 @@ def create_volcano(rows: pd.DataFrame, label: str, cutoff: float) -> BokehPlot:
             renderers=[glyph],
             tooltips=[
                 ("Component", "@component_id"),
+                ("Name", "@component_name"),
+                ("Function", "@component_description"),
                 ("Difference", "@activity_difference{0.0000}"),
                 ("Adjusted p-value", "@adjusted_p_value{0.000e}"),
                 ("Status", "@status"),
@@ -826,7 +878,7 @@ def create_timecourse(data: IModulonResult, component: str) -> BokehPlot:
             )
     summary = pd.DataFrame(summaries).sort_values("time")
     plot = BokehPlot(
-        title=f"Activity over elapsed time — {component}",
+        title=f"Activity over elapsed time — {component_label(data, component)}",
         x_axis_label="Elapsed time (min)",
         y_axis_label="Control-centered activity",
         height=480,
@@ -894,7 +946,7 @@ def create_time_effects(data: IModulonResult, component: str) -> BokehPlot:
         )
     rows["color"] = np.where(rows["is_significant"], "#B2182B", "#777777")
     plot = BokehPlot(
-        title=f"Target-minus-control activity difference — {component}",
+        title=f"Target-minus-control activity difference — {component_label(data, component)}",
         x_axis_label="Target elapsed time (min)",
         y_axis_label="Activity difference",
         height=420,
@@ -943,7 +995,7 @@ def create_component_effects(data: IModulonResult, component: str) -> BokehPlot:
     rows["x"] = np.arange(1, len(rows) + 1)
     rows["color"] = np.where(rows["is_significant"], "#B2182B", "#777777")
     plot = BokehPlot(
-        title=f"Target-minus-control activity differences — {component}",
+        title=f"Target-minus-control activity differences — {component_label(data, component)}",
         x_range=(0.5, len(rows) + 0.5),
         x_axis_label="Target group",
         y_axis_label="Activity difference",
@@ -998,7 +1050,7 @@ def create_multi_contrast_effects(data: IModulonResult) -> BokehPlot:
     plot = BokehPlot(
         title="Activity differences across contrasts",
         x_range=rows["contrast"].drop_duplicates().tolist(),
-        y_range=list(reversed(data.components)),
+        y_range=[component_label(data, key) for key in reversed(data.components)],
         x_axis_label="Contrast",
         y_axis_label="Component",
         height=max(440, 20 * len(data.components) + 140),
@@ -1008,7 +1060,7 @@ def create_multi_contrast_effects(data: IModulonResult) -> BokehPlot:
     source = ColumnDataSource(rows)
     glyph = plot._fig.rect(
         "contrast",
-        "component_id",
+        "component_label",
         0.98,
         0.98,
         source=source,
@@ -1017,7 +1069,7 @@ def create_multi_contrast_effects(data: IModulonResult) -> BokehPlot:
     )
     plot._fig.text(
         "contrast",
-        "component_id",
+        "component_label",
         text="significance",
         source=source,
         text_align="center",
@@ -1030,6 +1082,8 @@ def create_multi_contrast_effects(data: IModulonResult) -> BokehPlot:
             tooltips=[
                 ("Contrast", "@contrast"),
                 ("Component", "@component_id"),
+                ("Name", "@component_name"),
+                ("Function", "@component_description"),
                 ("Difference", "@activity_difference{0.0000}"),
                 ("Adjusted p-value", "@adjusted_p_value{0.000e}"),
                 ("Status", "@status"),
@@ -1052,14 +1106,15 @@ def create_time_heatmap(data: IModulonResult) -> BokehPlot:
         validate="many_to_one",
     ).copy()
     times = sorted(rows["order"].unique())
-    gap = float(np.diff(times).min()) if len(times) > 1 else 1.0
+    rows["time_label"] = rows["order"].map(lambda value: str(int(value)))
     limit = max(float(rows["mean"].abs().max()), np.finfo(float).eps)
     mapper = LinearColorMapper(
         palette=cc.b_diverging_bwr_20_95_c54, low=-limit, high=limit
     )
     plot = BokehPlot(
         title="Mean iModulon activity over elapsed time",
-        y_range=list(reversed(data.components)),
+        x_range=[str(int(value)) for value in times],
+        y_range=[component_label(data, key) for key in reversed(data.components)],
         x_axis_label="Elapsed time (min)",
         y_axis_label="Component",
         height=max(440, 20 * len(data.components) + 140),
@@ -1067,9 +1122,9 @@ def create_time_heatmap(data: IModulonResult) -> BokehPlot:
         tools="pan,wheel_zoom,save,reset",
     )
     glyph = plot._fig.rect(
-        "order",
-        "component_id",
-        gap * 0.8,
+        "time_label",
+        "component_label",
+        1.0,
         0.98,
         source=ColumnDataSource(rows),
         fill_color={"field": "mean", "transform": mapper},
@@ -1080,6 +1135,8 @@ def create_time_heatmap(data: IModulonResult) -> BokehPlot:
             renderers=[glyph],
             tooltips=[
                 ("Component", "@component_id"),
+                ("Name", "@component_name"),
+                ("Function", "@component_description"),
                 ("Group", "@group"),
                 ("Time", "@order min"),
                 ("Mean activity", "@mean{0.0000}"),
@@ -1094,26 +1151,30 @@ def create_time_heatmap(data: IModulonResult) -> BokehPlot:
     return plot
 
 
-def _overview(data: IModulonResult) -> pd.DataFrame:
-    diagnostics = data.provenance.get("model", {}).get("diagnostics", {})
-    settings = data.provenance.get("settings", {})
-    values = {
-        "Status": data.status["status"],
-        "Batch index": data.provenance.get("batch_index"),
-        "ICA analysis index": data.provenance.get("analysis_index"),
-        "Samples": len(data.samples),
-        "Components": len(data.components) if data.ready else "unavailable",
-        "Statistical availability": data.status.get(
-            "statistical_availability", "unavailable"
+def _add_component_annotations(data: IModulonResult) -> None:
+    from dominate.tags import h4
+
+    model = data.provenance.get("model", {})
+    metadata = model.get("component_metadata", {})
+    components = data.components or tuple(model.get("components", []))
+    h4("Component annotations")
+    DataTable.from_pandas(
+        pd.DataFrame(
+            [
+                [component]
+                + [
+                    metadata.get(component, {}).get(field, "")
+                    for field in ("name", "description", "regulator", "category")
+                ]
+                for component in components
+            ],
+            columns=[
+                "component_id", "component_name", "component_description",
+                "component_regulator", "component_category",
+            ],
         ),
-        "Control samples": ", ".join(data.provenance.get("control_sample_ids", [])),
-        "Gene coverage": diagnostics.get("gene_coverage"),
-        "Log base": settings.get("log_base"),
-        "Pseudocount": settings.get("pseudocount"),
-        "Minimum assigned abundance": settings.get("min_read_count"),
-        "Adjusted p-value cutoff": settings.get("padj_cutoff"),
-    }
-    return pd.DataFrame({"Metric": values.keys(), "Value": values.values()})
+        use_index=False,
+    )
 
 
 def imodulon_timecourse_enabled(data: IModulonResult) -> bool:
@@ -1131,34 +1192,17 @@ def add_imodulon_analysis(data: IModulonResult) -> None:
     timecourse = imodulon_timecourse_enabled(data)
     if timecourse:
         validate_imodulon_timecourse(data)
-    tabs = Tabs()
-    with tabs.add_tab("Overview"):
-        # Put the most useful snapshot-wide visual in the initially active pane.
-        # Burying every figure in an inactive nested tab makes a successful ICA
-        # result appear to contain tables only when the main tab is first opened.
-        if data.ready:
-            contrasts = list(
-                data.differential.groupby(
-                    ["target_group", "control_group"], sort=False
-                )
-            )
-            if timecourse:
-                _wrap(create_time_heatmap(data))
-            elif len(contrasts) == 1:
-                (target, control), rows = contrasts[0]
-                _wrap(
-                    create_volcano(rows, f"{target} vs {control}", data.cutoff),
-                    530,
-                )
-            elif len(contrasts) > 1:
-                _wrap(create_multi_contrast_effects(data))
-        DataTable.from_pandas(_overview(data), use_index=False)
-        readiness = data.samples[
-            ["sample_id", "alias", "group", "order", "assigned_abundance", "ready"]
-        ]
-        DataTable.from_pandas(readiness, use_index=False)
     if not data.ready:
+        from dominate.tags import p
+
+        p(
+            "iModulon analysis is deferred until all samples meet "
+            "the assigned-abundance threshold."
+        )
+        with Tabs().add_tab("Diagnostics"):
+            _add_component_annotations(data)
         return
+    tabs = Tabs()
     with tabs.add_tab("Activities"):
         pages = Tabs()
         for start in range(0, len(data.components), 50):
@@ -1166,19 +1210,29 @@ def add_imodulon_analysis(data: IModulonResult) -> None:
             label = f"{start + 1}–{start + len(selected)}"
             with pages.add_tab(label):
                 _wrap(create_activity_heatmap(data, selected))
-    with tabs.add_tab("Component details"):
+    with tabs.add_tab("Time course details" if timecourse else "Component details"):
+        if timecourse:
+            _wrap(create_time_heatmap(data))
         selector = Tabs()
         with selector.add_dropdown_menu("Component", change_header=True):  # type: ignore
             for component in data.components:
-                with selector.add_dropdown_tab(component):  # type: ignore
+                with selector.add_dropdown_tab(component_label(data, component)):  # type: ignore
+                    _component_description(data, component)
                     combined = BokehPlot()
                     combined._fig = column(
-                        create_component_distribution(data, component)._fig,
-                        create_component_effects(data, component)._fig,
+                        (
+                            create_timecourse(data, component) if timecourse
+                            else create_component_distribution(data, component)
+                        )._fig,
+                        (
+                            create_time_effects(data, component) if timecourse
+                            else create_component_effects(data, component)
+                        )._fig,
                         sizing_mode="stretch_width",
                     )
-                    combined.report_height = 900
-                    _wrap(combined, 900)
+                    height = 950 if timecourse else 900
+                    combined.report_height = height
+                    _wrap(combined, height)
     with tabs.add_tab("Differential activity"):
         contrasts = list(
             data.differential.groupby(["target_group", "control_group"], sort=False)
@@ -1208,69 +1262,5 @@ def add_imodulon_analysis(data: IModulonResult) -> None:
                     DataTable.from_pandas(
                         rows.drop(columns="is_significant"), use_index=False
                     )
-    if timecourse:
-        with tabs.add_tab("Time course"):
-            _wrap(create_time_heatmap(data))
-            selector = Tabs()
-            with selector.add_dropdown_menu("Component", change_header=True):  # type: ignore
-                for component in data.components:
-                    with selector.add_dropdown_tab(component):  # type: ignore
-                        combined = BokehPlot()
-                        combined._fig = column(
-                            create_timecourse(data, component)._fig,
-                            create_time_effects(data, component)._fig,
-                            sizing_mode="stretch_width",
-                        )
-                        combined.report_height = 950
-                        _wrap(combined, 950)
     with tabs.add_tab("Diagnostics"):
-        diagnostics = data.provenance["model"]["diagnostics"]
-        singular = pd.DataFrame(
-            {
-                "singular_value_index": range(
-                    1, len(diagnostics["singular_values"]) + 1
-                ),
-                "singular_value": diagnostics["singular_values"],
-            }
-        )
-        DataTable.from_pandas(
-            pd.DataFrame(
-                {
-                    "Metric": [
-                        "Rank",
-                        "Rank tolerance",
-                        "Condition number",
-                        "Shared genes",
-                        "Model genes",
-                        "Gene coverage",
-                    ],
-                    "Value": [
-                        diagnostics.get("rank"),
-                        diagnostics.get("rank_tolerance"),
-                        diagnostics.get("condition_number"),
-                        diagnostics.get("shared_gene_count"),
-                        diagnostics.get("model_gene_count"),
-                        diagnostics.get("gene_coverage"),
-                    ],
-                }
-            ),
-            use_index=False,
-        )
-        DataTable.from_pandas(singular, use_index=False)
-        DataTable.from_pandas(data.coverage, use_index=False)
-        DataTable.from_pandas(
-            data.qc.merge(
-                data.samples[["sample_id", "alias", "group"]],
-                on="sample_id",
-                validate="one_to_one",
-            ),
-            use_index=False,
-        )
-        DataTable.from_pandas(data.mapping, use_index=False)
-    with tabs.add_tab("Methods"):
-        methods = _empty(
-            "Interpretation",
-            "Activities are projections of log-transformed, million-scaled abundance onto the supplied fixed matrix and are centered on the shared controls. Effects are activity differences, not log fold changes. Each component uses an independent two-sided Welch test; Benjamini–Hochberg correction is applied separately within each contrast. Confidence intervals are nominal 95% intervals. Missing tests remain unavailable. Component signs and scales belong to the supplied model, so magnitudes are not directly comparable between components. Coverage and reconstruction measures are technical diagnostics, not biological confidence estimates. Live-batch tests are snapshot analyses and do not provide sequential error control.",
-            300,
-        )
-        _wrap(methods, 300)
+        _add_component_annotations(data)

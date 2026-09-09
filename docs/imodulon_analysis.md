@@ -1,12 +1,12 @@
 # Fixed-matrix iModulon analysis
 
-Supply `--ica_matrix` to infer component activities from each complete cumulative
+Enable `--ica_analysis=true` and supply `--ica_matrix` to infer component activities from each complete cumulative
 Oarfish batch. Every non-control group is also compared with the control group
 using independent two-sided Welch tests and Benjamini–Hochberg (BH) correction.
 ICA runs alongside differential expression and does not require edgeR, GMT,
 fry, or GSVA. Active ICA results are included in a dedicated report tab.
 
-The `ica_analysis` toggle defaults to `true`, preserving matrix-based activation.
+Enable ICA explicitly in your run parameters.
 Set `ica_analysis` to `false` in your parameter file (or `params.ica_analysis = false`
 in Nextflow config) to disable ICA even when a matrix is configured. Disabled ICA
 skips matrix/map file loading and snapshot publication. Without `ica_matrix`, ICA
@@ -24,16 +24,10 @@ Without an `order` column, ICA uses the comparison layout.
 
 ## Run
 
-Build the local analysis image once from the `seq_lm_wf` directory. The image is
-not automatically downloaded or published by this change:
-
-```bash
-docker build -t rnabioinfo/seq_lm_ica:v1.0.0 ../docker_containers/seq_lm_ica
-```
-
-The image follows the other `docker_containers` examples: it provides pinned
-runtime dependencies, while Nextflow supplies the CLI from the pipeline's `bin`
-directory. Its `docker_version.json` matches the workflow's `v1.0.0` image tag.
+Nextflow automatically fetches the published `rnabioinfo/seq_lm_ica:v1.0.0`
+image from Docker Hub through the selected container runtime. The image supplies
+pinned runtime dependencies, while Nextflow supplies the CLI from the workflow's
+`bin` directory.
 
 An ICA-only analysis (plus existing QC/quantification) can use an `ica.json`
 parameter file. JSON preserves boolean and numeric types for schema validation:
@@ -81,7 +75,20 @@ Gene IDs and component headers must be nonempty and unique. Weights must be
 finite numbers. Orientation is never guessed. All components are fitted jointly;
 their names, order, signs, and scales are preserved. The original training activity
 matrix, PyModulon objects, module-membership thresholds, and metadata sidecars
-are not required. Component column names serve as display identifiers.
+are not required. Component column names remain the stable identifiers.
+
+To show curated names and descriptions, supply `--ica_imodulon_table iM_table.csv`
+from the **same model** as the weight matrix. PyModulon exports commonly call this
+`imodulon_table.csv`; iModulonDB uses `iM_table.csv`. This is model-specific
+annotation, not a universal mapping from component numbers to biological functions.
+The CSV/TSV must contain one row for every matrix component, keyed by `component_id`,
+`k`, or its first exported index column, and a `name` column. Optional columns are
+`function` (or `description`), `regulator` (or `regulator_readable`), and `category`.
+Unknown, duplicate, and missing component IDs are rejected. The normalized table
+and its source SHA-256 are recorded in model provenance and carried into snapshots.
+Names appear alongside IDs in plot axes, titles, and component selectors; functions
+appear in heatmap/volcano hovers and component details, with annotations in report
+tables. Unannotated models retain their original IDs without inferred names.
 
 The run annotation resolves Oarfish `tname` targets to genes. Exact gene IDs and
 unambiguous locus-tag aliases are matched to model rows. GTF transcript IDs and
@@ -110,6 +117,7 @@ No orthologs or model downloads are generated automatically.
 | --- | --- | --- |
 | `ica_analysis` | true | Allow ICA when a matrix is supplied; false disables the branch |
 | `ica_matrix` | unset | Weights CSV/TSV; enables analysis when the toggle is true |
+| `ica_imodulon_table` | unset | Matching component names/functions CSV/TSV; requires the matrix |
 | `ica_gene_map` | unset | Explicit one-to-one gene map; requires the matrix |
 | `ica_log_base` | 2.0 | Finite logarithm base greater than 1 |
 | `ica_pseudocount` | 1.0 | Positive finite value added to million-scaled abundance |
@@ -230,12 +238,17 @@ deferred; lower the threshold and rerun if appropriate.
 ## Report visualization
 
 When ICA is active, the matching immutable ICA snapshot is required before its
-QC report batch is generated. The main **iModulon Analysis** tab includes an
-overview, control-centered activity heatmaps, per-component sample and effect
-views, differential-activity plots and tables, diagnostics, and interpretation
-notes. One contrast is shown directly; multiple contrasts use contrast tabs and
-an across-contrast effect matrix. Deferred snapshots show assigned abundance and
-readiness without stale plots.
+QC report batch is generated. The main **iModulon Analysis** tab includes
+control-centered activity heatmaps, per-component sample and effect
+views, differential-activity plots and tables, and diagnostics. One contrast is shown directly; multiple contrasts use contrast tabs and
+an across-contrast effect matrix. The mean-activity heatmap uses ordered discrete time points with equally spaced,
+adjacent columns; trajectory plots retain elapsed-minute spacing. Overview and
+Methods sub-tabs are omitted. Complete `order` metadata selects **Time course details**;
+without it, **Component details** shows sample distributions and group effects.
+Only one of these detail tabs is displayed. **Diagnostics** contains only the
+Component annotations table. Snapshot readiness, projection QC, mapping, and rank
+statistics remain available in the analysis output files. Deferred snapshots show
+a brief status message and component annotations without stale plots.
 
 Report joins reject duplicate batches, unmatched inputs, inconsistent snapshot
 identities, and missing publication sequences. A missing batch stops the run
@@ -286,7 +299,6 @@ and `--min-gene-coverage`, and `analyze --log-base`, `--pseudocount`, `--min-rea
 `--cutoff`, `--batch-index`, `--analysis-index`, and `--report-sequence` expose the
 same analysis settings and provenance.
 
-`containers/imodulon/smoke_test.sh` builds the image and exercises both CLI stages.
 The Python tests are under `bin/imodulon_analysis/tests`. The Nextflow integration
 fixture is `test/test_imodulon_analysis.nf`; its local config uses the Python
 environment on PATH. To run the same pinned numerical environment locally:

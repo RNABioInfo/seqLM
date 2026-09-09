@@ -9,6 +9,9 @@ def validate_parameters(params_map: Map) -> Void {
     if (params_map.ica_analysis != false && params_map.ica_gene_map && !params_map.ica_matrix) {
         error('--ica_gene_map requires --ica_matrix.')
     }
+    if (params_map.ica_analysis != false && params_map.ica_imodulon_table && !params_map.ica_matrix) {
+        error('--ica_imodulon_table requires --ica_matrix.')
+    }
     if (ica_analysis_enabled(params_map)) {
         if (!params_map.reference_genome || !params_map.reference_annotation) {
             error('--ica_matrix requires both --reference_genome and --reference_annotation.')

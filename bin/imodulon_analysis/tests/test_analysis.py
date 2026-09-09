@@ -304,7 +304,7 @@ def test_config_schema_defaults():
     schema = json.loads((root / "nextflow_schema.json").read_text())
     properties = schema["definitions"]["imodulon_analysis_options"]["properties"]
     config = (root / "nextflow.config").read_text()
-    assert len(properties) == 8
+    assert len(properties) == 9
     assert "ica_timecourse" not in properties
     for name, definition in properties.items():
         match = re.search(r"^\s*" + name + r" = (.+)$", config, re.M)
@@ -328,3 +328,30 @@ def test_noninteger_constant_groups_are_untestable():
     assert result.iloc[0].target_sd == 0
     assert result.iloc[0].control_sd == 0
     assert result.iloc[0].p_value is None
+
+
+@pytest.mark.parametrize("key", ["k", "component_id", ""])
+def test_component_metadata_is_keyed_and_preserved_in_snapshots(tmp_path, key):
+    fixture(tmp_path)
+    table = tmp_path / "iM_table.csv"
+    table.write_text(f"{key},name,function,regulator_readable,category\nnegative,Stress,Stress response,RpoS,Stress\npositive,Carbon,Carbon use,,Carbon\n")
+    prepared = tmp_path / "prepared"
+    prepare(tmp_path / "matrix.csv", tmp_path / "annotation.gtf", None, 1, prepared, table)
+    model = json.loads((prepared / "model.json").read_text())
+    assert model["components"] == ["positive", "negative"]
+    assert model["component_metadata"]["negative"]["regulator"] == "RpoS"
+    assert model["hashes"]["imodulon_table"]
+    for threshold, name in ((0, "ready"), (10000, "deferred")):
+        output = tmp_path / name
+        analyze(prepared, tmp_path / "manifest.tsv", tmp_path, output, min_reads=threshold)
+        provenance = json.loads((output / "provenance.json").read_text())
+        assert provenance["model"]["component_metadata"] == model["component_metadata"]
+
+
+@pytest.mark.parametrize("rows", ["positive,Carbon\npositive,Other\n", "unknown,Carbon\nnegative,Stress\n", "positive,Carbon\n"])
+def test_component_metadata_rejects_mismatched_ids(tmp_path, rows):
+    from workflow_glue.imodulon_metadata import read_component_metadata
+    path = tmp_path / "metadata.csv"
+    path.write_text("k,name\n" + rows)
+    with pytest.raises(ValueError, match="component ID"):
+        read_component_metadata(path, ["positive", "negative"])

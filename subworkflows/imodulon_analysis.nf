@@ -11,15 +11,15 @@ workflow imodulon_analysis {
     matrix: Path
     annotation: Path
     gene_map: Path
+    imodulon_table: Path
     settings: Map
     first_index: Integer
     output_root: Path
 
     main:
-    prepared = prepare_ica_model(matrix, annotation, gene_map, settings)
+    prepared = prepare_ica_model(matrix, annotation, gene_map, imodulon_table, settings)
     def results: Channel<ICABatchResult> = infer_ica_activities(batches, prepared, settings, first_index)
-    // A synchronous channel operator serializes filesystem publication. Native
-    // process submission can reorder side effects even with fair/maxForks.
+
     published = results.map { result ->
         def destination: Path = publish_ica_snapshot(result, output_root)
         record(
@@ -43,23 +43,26 @@ process prepare_ica_model {
     matrix: Path
     annotation: Path
     gene_map: Path
+    imodulon_table: Path
     settings: Map
 
     stage:
     stageAs matrix, 'model_weights/input.csv'
     stageAs annotation, 'annotation/input.gtf'
     stageAs gene_map, 'gene_map/input.tsv'
+    stageAs imodulon_table, 'imodulon_table/input.csv'
 
     output:
     file('prepared_ica')
 
     script:
     def map_args: String = settings.has_gene_map ? '--gene-map gene_map/input.tsv' : ''
+    def table_args: String = settings.has_imodulon_table ? '--imodulon-table imodulon_table/input.csv' : ''
     """
     imodulon-analysis prepare \\
         --matrix model_weights/input.csv \\
         --annotation annotation/input.gtf \\
-        ${map_args} \\
+        ${table_args} ${map_args} \\
         --min-gene-coverage ${settings.min_gene_coverage} \\
         --output prepared_ica
     """
